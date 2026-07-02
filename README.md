@@ -8,3 +8,4 @@ Xatolarni kuzatish (Error Logging): Sentry kabi xizmatlarni ulash, bu serverda y
 HTTPS (SSL/TLS): Render yoki Railway kabi platformalar buni avtomatik qiladi, ammo agar VPS (masalan, DigitalOcean yoki AWS) ishlatsangiz, Certbot (Let's Encrypt) orqali SSL sertifikatini o‘rnatish majburiy.
 
 Static fayllarni boshqarish: Production'da statik fayllarni (CSS, JS, Rasmlar) Flask'ning o‘zi emas, balki Nginx yoki CDN (masalan, Cloudflare) orqali uzatish samaraliroq.
+Bu ro‘yxatdagi bandlardan qaysi biri bo‘yicha qo‘shimcha texnik yordam yoki aniqlashtirish kerak? (Masalan, Procfile qanday yozilishi yoki gunicorn konfiguratsiyasi bo‘yicha).
