@@ -1,44 +1,39 @@
 # Temurbek
-1. Procfile va gunicorn masalasi
-Render yoki boshqa platformalarda ilovangiz gunicorn orqali ishlashi shart.
+Tushunarli. Capstone loyihangiz "Отклонено" (68/100) deb qaytarilgan bo'lsa, demak, asosiy texnik talablar yoki hujjatlashtirishda (README) kamchilik bor. Keling, ushbu ro'yxatni sinchkovlik bilan tekshirib chiqamiz:
 
-Procfile faylini loyihangizning root (asosiy) papkasida yaratganingizga ishonch hosil qiling. Undagi mazmun quyidagicha bo‘lishi kerak:
-web: gunicorn app:app (agar asosiy faylingiz app.py bo'lsa).
+1. Texnik talablar tekshiruvi (Checklist)
+Tirik demo URL: Sizning saytingizga tashqi odam kirganda sahifa ochilyaptimi?
 
-Agar requirements.txt ichida gunicorn yo'q bo'lsa, uni qo'shib, pip freeze > requirements.txt buyrug'i bilan yangilang.
+Tekshiring: Render yoki Railway dashboardida "Deployment successful" degan yashil belgi bormi?
 
-2. .env va SECRET_KEY xavfsizligi
-.env faylingiz .gitignore ichida ekanligini tekshiring:
+.env va secret_key:
 
-Terminalda git check-ignore -v .env deb yozing. Agar natija qaytsa, demak u .gitignore ga qo'shilgan.
+Tekshiring: GitHub repozitoriyangizni oching. U yerda .env fayli ko'rinib turibdimi? Agar ko'rinsa, bu katta xato! U mutlaqo bo'lmasligi kerak.
 
-Kod ichida app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') kabi ishlatganingizga ishonch hosil qiling. Hardcode qilingan (matn ko'rinishidagi) kalitlar bo'lmasligi kerak.
+Ishlab chiqarish (Production) muhiti: Render yoki boshqa hosting sozlamalarida "Environment Variables" bo'limiga SECRET_KEY va boshqa kalitlarni kiritganmisiz?
 
-3. Production sozlamalari (DEBUG=False)
-Ilovangizda debug rejimini config.py yoki app.py ichida os.getenv('DEBUG', 'False') == 'True' qilib belgilang.
+Procfile:
 
-Production muhitida (Render/Railway dashboardida) DEBUG o'zgaruvchisini False qilib belgilaganingizni tekshiring.
+Tekshiring: Asosiy papkada Procfile (kengaytmasiz) fayli bormi? Ichida web: gunicorn app:app (yoki main:app) yozuvi bormi?
 
-4. README.md fayli — Bu sizning yuzingiz
-Tekshiruvchi birinchi navbatda shu faylni o'qiydi. Unda quyidagilar bo'lishi shart:
+DEBUG=False:
 
-Lokal o'rnatish: Loyihani qanday qilib git clone qilish, virtual muhit yaratish va pip install -r requirements.txt qilish bo'yicha bosqichma-bosqich qo'llanma.
+Tekshiring: app.run(debug=True) kodi kod bazasida qolib ketmadimi? Ishlab chiqarish muhitida debug parametri har doim False bo'lishi kerak.
 
-Deploy qadamlari: Loyihani qanday qilib Render/Railway'ga ulaganingiz haqida qisqacha ma'lumot.
+2. README.md - Muhim qism
+Agar texnik qism to'g'ri bo'lsa, tekshiruvchi sizning README faylingizni yetarli emas deb topgan bo'lishi mumkin. README quyidagi tuzilishga ega bo'lishi shart:
 
-Demo URL: Ishlayotgan saytingizning havolasini README'ning eng tepasiga, kattaroq shriftda yozing.
+Notlar Ilovasi
+Demo URL: [Havolani shu yerga qo'ying]
 
-API Documentation: REST API ishlayotgan bo'lsa, qaysi endpoint-larga (/api/notes) qanday ma'lumot yuborish kerakligini (misol uchun curl yoki Postman misollari bilan) yozib chiqing.
+Lokal o'rnatish
+Repozitoriyani yuklab oling: git clone ...
 
-5. Tekshiruv (Checklist)
-Qayta topshirishdan oldin o‘zingizga savol bering:
+Virtual muhitni yoqing va kutubxonalarni o'rnating: pip install -r requirements.txt
 
-Men bergan linkga kirganda 404 yoki 500 xatosi chiqyaptimi?
+.env faylini yarating va SECRET_KEY=... ni yozing.
 
-requirements.txt ichida hamma kutubxonalar bormi?
+Ishga tushiring: python app.py
 
-Github repozitoriyam "Public" holatdami?
-
-Maslahat: Agar loyiha Render'da ishlamayotgan bo'lsa, Render dashboardidagi "Logs" bo‘limiga kiring. U yerda aynan qaysi qatorda xatolik chiqayotgani (masalan, modul topilmadi yoki baza ulanmadi) aniq yozilgan bo'ladi.
-
-Ishingizda kamchilik bo'lsa, muammoning loglarini (xatolik matnini) menga yuboring, biz birgalikda uni tuzatamiz. Qaysi qismda qiynalayapsiz?
+Deploy qadamlari
+(Bu yerda loyihani qaysi platformaga va qanday o'tkazganingizni qisqacha yozing)
