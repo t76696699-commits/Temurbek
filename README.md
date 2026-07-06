@@ -1,39 +1,144 @@
-# Temurbek
-Tushunarli. Capstone loyihangiz "Отклонено" (68/100) deb qaytarilgan bo'lsa, demak, asosiy texnik talablar yoki hujjatlashtirishda (README) kamchilik bor. Keling, ushbu ro'yxatni sinchkovlik bilan tekshirib chiqamiz:
+Loyiha Tuzilishi (Directory Structure)
+Loyihangiz papkalar ierarxiyasi quyidagicha bo'lishi kerak:
 
-1. Texnik talablar tekshiruvi (Checklist)
-Tirik demo URL: Sizning saytingizga tashqi odam kirganda sahifa ochilyaptimi?
+Plaintext
+flask_app/
+│
+├── app/
+│   ├── __init__.py          # App factory shu yerda joylashadi
+│   ├── main/
+│   │   └── routes.py        # Main blueprint yo'llari
+│   ├── notes/
+│   │   └── routes.py        # Notes blueprint yo'llari va xotira-ichidagi ma'lumotlar
+│   └── templates/
+│       ├── base.html        # Umumiy shablon (baza)
+│       ├── main_index.html  # Asosiy sahifa
+│       └── notes_list.html  # Eslatmalar ro'yxati sahifasi
+│
+└── run.py                   # Loyihani ishga tushiruvchi fayl
+Kodlar
+1. app/__init__.py (Application Factory)
+Bu yerda Flask ilovasi yaratiladi va Blueprint'lar ro'yxatdan o'tkaziladi. notes_bp uchun talab qilinganidek /notes prefiksi o'rnatilgan.
 
-Tekshiring: Render yoki Railway dashboardida "Deployment successful" degan yashil belgi bormi?
+Python
+from flask import Flask
 
-.env va secret_key:
+def create_app():
+    app = Flask(__name__)
 
-Tekshiring: GitHub repozitoriyangizni oching. U yerda .env fayli ko'rinib turibdimi? Agar ko'rinsa, bu katta xato! U mutlaqo bo'lmasligi kerak.
+    # Blueprint'larni import qilish
+    from app.main.routes import main_bp
+    from app.notes.routes import notes_bp
 
-Ishlab chiqarish (Production) muhiti: Render yoki boshqa hosting sozlamalarida "Environment Variables" bo'limiga SECRET_KEY va boshqa kalitlarni kiritganmisiz?
+    # Blueprint'larni ro'yxatdan o'tkazish
+    app.register_blueprint(main_bp)
+    app.register_blueprint(notes_bp, url_prefix='/notes')
 
-Procfile:
+    return app
+2. app/main/routes.py
+Asosiy sahifa uchun Blueprint va uning yo'li (route).
 
-Tekshiring: Asosiy papkada Procfile (kengaytmasiz) fayli bormi? Ichida web: gunicorn app:app (yoki main:app) yozuvi bormi?
+Python
+from flask import Blueprint, render_template
 
-DEBUG=False:
+main_bp = Blueprint('main', __name__)
 
-Tekshiring: app.run(debug=True) kodi kod bazasida qolib ketmadimi? Ishlab chiqarish muhitida debug parametri har doim False bo'lishi kerak.
+@main_bp.route('/')
+def index():
+    return render_template('main_index.html')
+3. app/notes/routes.py
+Bu yerda kamida 5 ta eslatmadan iborat Python ro'yxati (list) xotirada saqlanadi va sahifaga uzatiladi.
 
-2. README.md - Muhim qism
-Agar texnik qism to'g'ri bo'lsa, tekshiruvchi sizning README faylingizni yetarli emas deb topgan bo'lishi mumkin. README quyidagi tuzilishga ega bo'lishi shart:
+Python
+from flask import Blueprint, render_template
 
-Notlar Ilovasi
-Demo URL: [Havolani shu yerga qo'ying]
+notes_bp = Blueprint('notes', __name__)
 
-Lokal o'rnatish
-Repozitoriyani yuklab oling: git clone ...
+# Xotira ichidagi eslatmalar ro'yxati (Kamida 5 ta)
+NOTES_DATA = [
+    {"id": 1, "title": "Bozorlik ro'yxati", "content": "Sut, non, sariyog' va mevalar sotib olish."},
+    {"id": 2, "title": "Flask o'rganish", "content": "Blueprint va Application Factory mavzularini takrorlash."},
+    {"id": 3, "title": "Ertangi rejalar", "content": "Ertalab soat 7:00 da yugurish va kitob o'qish."},
+    {"id": 4, "title": "Loyihani topshirish", "content": "Flask loyihasini Github-ga yuklash va linkini yuborish."},
+    {"id": 5, "title": "Shaxsiy eslatma", "content": "Dasturlash bo'yicha yangi videolarni tomosha qilish."}
+]
 
-Virtual muhitni yoqing va kutubxonalarni o'rnating: pip install -r requirements.txt
+@notes_bp.route('/')
+def list_notes():
+    return render_template('notes_list.html', notes=NOTES_DATA)
+4. app/templates/base.html
+Barcha sahifalar uchun umumiy bo'lgan HTML maketi. Undagi linklar url_for orqali dinamik yaratilgan.
 
-.env faylini yarating va SECRET_KEY=... ni yozing.
+HTML
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <title>Flask Blueprint Loyihasi</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f4; }
+        nav { margin-bottom: 20px; padding: 10px; background: #fff; border-radius: 5px; }
+        nav a { margin-right: 15px; text-decoration: none; color: #007BFF; font-weight: bold; }
+        .container { background: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .note-card { border-left: 4px solid #007BFF; padding: 10px; margin-bottom: 10px; background: #fafafa; }
+    </style>
+</head>
+<body>
 
-Ishga tushiring: python app.py
+    <nav>
+        <!-- url_for('blueprint.funksiya') formati -->
+        <a href="{{ url_for('main.index') }}">Bosh sahifa</a>
+        <a href="{{ url_for('notes.list_notes') }}">Eslatmalar</a>
+    </nav>
 
-Deploy qadamlari
-(Bu yerda loyihani qaysi platformaga va qanday o'tkazganingizni qisqacha yozing)
+    <div class="container">
+        {% block content %} {% endblock %}
+    </div>
+
+</body>
+</html>
+5. app/templates/main_index.html
+Asosiy sahifa kontenti.
+
+HTML
+{% extends 'base.html' %}
+
+{% block content %}
+    <h1>Xush kelibsiz!</h1>
+    <p>Bu Flask Application Factory va Blueprint arxitekturasi asosida yaratilgan loyiha.</p>
+    <p>Eslatmalarni ko'rish uchun yuqoridagi menyudan foydalaning yoki <a href="{{ url_for('notes.list_notes') }}">bu yerga bosing</a>.</p>
+{% endblock %}
+6. app/templates/notes_list.html
+Xotiradagi eslatmalarni aylanib chiquvchi (loop) shablon.
+
+HTML
+{% extends 'base.html' %}
+
+{% block content %}
+    <h1>Mening Eslatmalarim</h1>
+    <hr>
+    {% for note in notes %}
+        <div class="note-card">
+            <h3>{{ note.title }}</h3>
+            <p>{{ note.content }}</p>
+        </div>
+    {% endfor %}
+{% endblock %}
+7. run.py
+Loyihani ishga tushirish uchun asosiy fayl.
+
+Python
+from app import create_app
+
+app = create_app()
+
+if __name__ == '__main__':
+    app.run(debug=True)
+Loyihani ishga tushirish:
+Terminalda loyiha joylashgan asosiy papkaga (flask_app/) kiring.
+
+Quyidagi buyruq orqali loyihani ishga tushiring:
+
+Bash
+python run.py
+Brauzerda [http://127.0.0.1:5000/](http://127.0.0.1:5000/) manziliga kirsangiz Bosh sahifa, [http://127.0.0.1:5000/notes/](http://127.0.0.1:5000/notes/) manziliga kirsangiz esa eslatmalar ro'yxati ochiladi. Shuningdek, menyudagi barcha havolalar url_for orqali to'g'ri bog'langan.
