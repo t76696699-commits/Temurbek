@@ -1,64 +1,69 @@
-# Big O notatsiyasi - amaliy misollar
+"""Xabar yuborish, o'qish, tahrirlash va entity resolution namunalari.
+pip install telethon python-dotenv
+"""
+import asyncio
+import os
 
-# O(1) - Doimiy vaqt: ro'yxat elementiga indeks orqali murojaat
-def get_first_element(arr):
-    # Har doim bitta amal, ro'yxat hajmidan qat'i nazar
-    return arr[0]
+from dotenv import load_dotenv
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.errors import FloodWaitError
 
+load_dotenv()
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["TELETHON_SESSION_STRING"]
 
-# O(n) - Chiziqli vaqt: ro'yxat bo'ylab bir marta aylanish
-def find_max(arr):
-    max_val = arr[0]
-    for i in range(1, len(arr)):
-        # Har bir elementni bitta marta tekshiramiz
-        if arr[i] > max_val:
-            max_val = arr[i]
-    return max_val
-
-
-# O(n^2) - Kvadratik vaqt: ichma-ich ikkita loop
-def has_duplicates(arr):
-    for i in range(len(arr)):
-        for j in range(i + 1, len(arr)):
-            # Har bir juftlikni solishtiramiz - taxminan n * n amal
-            if arr[i] == arr[j]:
-                return True
-    return False
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-# O(log n) - Logarifmik vaqt: binary search
-def binary_search(sorted_arr, target):
-    left = 0
-    right = len(sorted_arr) - 1
+async def send_and_receive_basics() -> None:
+    async with client:
+        # 1) O'zingizga eslatma yuborish (Saved Messages)
+        note = await client.send_message("me", "Telethon darsligi: 4-dars yakunlandi.")
+        print(f"Yuborildi, id={note.id}")
 
-    while left <= right:
-        # Har safar qidiruv maydonini yarmiga qisqartiramiz
-        mid = (left + right) // 2
+        # 2) Xabarni tahrirlash
+        await client.edit_message("me", note.id, "Telethon darsligi: 4-dars -- tahrirlangan.")
 
-        if sorted_arr[mid] == target:
-            return mid
-        elif sorted_arr[mid] < target:
-            left = mid + 1
-        else:
-            right = mid - 1
-    return -1
+        # 3) Oxirgi 5 ta xabarni o'qish (eng yangisidan boshlab)
+        async for msg in client.iter_messages("me", limit=5):
+            sender = await msg.get_sender()
+            name = getattr(sender, "first_name", "Noma'lum")
+            print(f"[{msg.date}] {name}: {msg.text!r}")
 
+        # 4) "Yozmoqda..." holatini ko'rsatish (foydalanuvchiga xos amal)
+        async with client.action("me", "typing"):
+            await asyncio.sleep(1)
 
-# O(n log n) - samarali tartiblash uchun Python'ning o'rnatilgan sorted()
-def sort_numbers(arr):
-    # Python Timsort algoritmidan foydalanadi - o'rtacha O(n log n)
-    return sorted(arr)
+        # 5) Xabarni o'qilgan deb belgilash
+        await client.send_read_acknowledge("me")
 
 
-# Amaliyot uchun test
-numbers = [5, 3, 8, 1, 9, 2, 7]
-print("Max element (O(n)):", find_max(numbers))
-print("Duplicates bormi (O(n^2)):", has_duplicates(numbers))
+async def resolve_entity_safely(username: str) -> None:
+    """Entity topilmasa ValueError chiqishi mumkin -- buni to'g'ri ushlash."""
+    async with client:
+        try:
+            entity = await client.get_entity(username)
+            print(f"Topildi: {entity.first_name if hasattr(entity, 'first_name') else entity.title}")
+        except ValueError:
+            print(
+                f"'{username}' entity'sini topib bo'lmadi -- hisobingiz hali "
+                f"bu foydalanuvchi/kanal bilan hech qachon 'uchrashmagan' bo'lishi mumkin."
+            )
 
-sorted_numbers = sort_numbers(numbers)
-print("Tartiblangan (O(n log n)):", sorted_numbers)
-print("Binary search natijasi (O(log n)):", binary_search(sorted_numbers, 8))
 
-# Har bir funksiya uchun murakkablikni izohlash muhim,
-# chunki bu real loyihalarda performance muammolarini
-# oldindan aniqlash imkonini beradi.
+async def send_with_flood_guard(entity: str, text: str) -> None:
+    """Ommaviy yuborishda albatta FloodWaitError'ni ushlash kerak --
+    aks holda dastur kutilmaganda to'xtab qoladi."""
+    async with client:
+        try:
+            await client.send_message(entity, text)
+        except FloodWaitError as e:
+            print(f"Flood limit -- {e.seconds} soniya kutish kerak, keyin qayta urinamiz.")
+            await asyncio.sleep(e.seconds)
+            await client.send_message(entity, text)
+
+
+if __name__ == "__main__":
+    asyncio.run(send_and_receive_basics())
