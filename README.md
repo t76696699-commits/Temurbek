@@ -1,14 +1,15 @@
-"""Turli xil events.* handlerlari namunasi.
+"""iter_messages orqali katta tarixni sahifalab, davom ettirib o'qish.
 pip install telethon python-dotenv
 """
 import asyncio
+import json
 import os
-import re
+from pathlib import Path
 
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerChannel
+from telethon.errors import FloodWaitError
 
 load_dotenv()
 client = TelegramClient(
@@ -17,61 +18,65 @@ client = TelegramClient(
     os.environ["API_HASH"],
 )
 
-
-# 1) Oddiy buyruq -- faqat kiruvchi shaxsiy xabarlarda
-@client.on(events.NewMessage(pattern=r"(?i)^/ping$", incoming=True))
-async def on_ping(event: events.NewMessage.Event) -> None:
-    if event.is_private:
-        await event.reply("pong")
+PROGRESS_FILE = Path("scan_progress.json")
 
 
-# 2) Regex bilan naqsh -- masalan, "eslatma: <matn>" ko'rinishidagi xabarlar
-@client.on(events.NewMessage(pattern=re.compile(r"^eslatma:\s*(.+)$", re.IGNORECASE)))
-async def on_reminder(event: events.NewMessage.Event) -> None:
-    reminder_text = event.pattern_match.group(1)
-    await event.respond(f"Eslatma saqlandi: {reminder_text!r}")
-    raise events.StopPropagation  # boshqa handlerlar bu xabar uchun ishga tushmasin
+def load_progress() -> dict:
+    if PROGRESS_FILE.exists():
+        return json.loads(PROGRESS_FILE.read_text())
+    return {}
 
 
-# 3) Faqat belgilangan kanal/guruhlardagi xabarlarni kuzatish
-MONITORED_CHATS = [-1001234567890]  # kanal/guruh ID'lari
+def save_progress(chat_key: str, last_id: int) -> None:
+    progress = load_progress()
+    progress[chat_key] = last_id
+    PROGRESS_FILE.write_text(json.dumps(progress))
 
 
-@client.on(events.NewMessage(chats=MONITORED_CHATS))
-async def on_monitored_message(event: events.NewMessage.Event) -> None:
-    print(f"[Kuzatilayotgan chat] {event.chat_id}: {event.text[:80]!r}")
+async def scan_full_history(chat: str, batch_size: int = 50) -> None:
+    """Chatning to'liq tarixini xronologik tartibda, oldingi to'xtagan
+    joydan davom ettirib skanerlaydi."""
+    progress = load_progress()
+    last_id = progress.get(chat, 0)
+    processed = 0
+    batch: list[str] = []
 
+    async def flush_batch() -> None:
+        if not batch:
+            return
+        # Bu yerda haqiqiy loyihada DB'ga bulk insert bo'lardi.
+        print(f"  -- {len(batch)} ta xabar saqlandi (batch)")
+        batch.clear()
 
-# 4) Guruhga a'zo qo'shilganda/chiqqanda
-@client.on(events.ChatAction())
-async def on_chat_action(event: events.ChatAction.Event) -> None:
-    if event.user_joined or event.user_added:
-        user = await event.get_user()
-        print(f"Yangi a'zo: {user.first_name}")
-    elif event.user_left or event.user_kicked:
-        print("Bir a'zo chiqib ketdi/chiqarildi.")
+    try:
+        async for message in client.iter_messages(
+            chat, reverse=True, offset_id=last_id, wait_time=1
+        ):
+            if message.text:
+                batch.append(message.text)
+            if len(batch) >= batch_size:
+                await flush_batch()
+            processed += 1
+            last_id = message.id
 
+            if processed % 500 == 0:
+                save_progress(chat, last_id)
+                print(f"Progress saqlandi: {processed} ta xabar, oxirgi id={last_id}")
+    except FloodWaitError as e:
+        print(f"FloodWait: {e.seconds} soniya kutamiz va progressni saqlaymiz.")
+        save_progress(chat, last_id)
+        await asyncio.sleep(e.seconds)
+        await scan_full_history(chat, batch_size)  # davom ettirish
+        return
 
-# 5) Xabar tahrirlanganda kuzatish
-@client.on(events.MessageEdited())
-async def on_message_edited(event: events.MessageEdited.Event) -> None:
-    print(f"Xabar tahrirlandi (id={event.id}): {event.text[:80]!r}")
-
-
-# 6) Dinamik ravishda handler qo'shish (dekoratorsiz)
-async def dynamic_handler(event: events.NewMessage.Event) -> None:
-    await event.reply("Dinamik ro'yxatga olingan handler ishladi.")
-
-
-def register_dynamic_handler() -> None:
-    client.add_event_handler(dynamic_handler, events.NewMessage(pattern="/dinamik"))
+    await flush_batch()
+    save_progress(chat, last_id)
+    print(f"Skanerlash tugadi: jami {processed} ta xabar qayta ishlandi.")
 
 
 async def main() -> None:
-    register_dynamic_handler()
     async with client:
-        print("Handlerlar tayyor, tinglanmoqda...")
-        await client.run_until_disconnected()
+        await scan_full_history("@ochiq_kanal_namunasi")
 
 
 if __name__ == "__main__":
