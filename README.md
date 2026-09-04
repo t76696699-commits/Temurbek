@@ -1,21 +1,15 @@
-"""Kanal/guruhga xavfsiz, tezlikni cheklab qo'shilish namunasi.
+"""Mediani ommaviy yuklab olish: progress, semaphore bilan tezlik nazorati.
 pip install telethon python-dotenv
 """
 import asyncio
 import os
-import random
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import (
-    PeerFloodError,
-    FloodWaitError,
-    UserAlreadyParticipantError,
-    InviteHashExpiredError,
-)
-from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.errors import FloodWaitError
+from telethon.tl.types import InputMessagesFilterPhotos
 
 load_dotenv()
 client = TelegramClient(
@@ -24,61 +18,49 @@ client = TelegramClient(
     os.environ["API_HASH"],
 )
 
-
-async def join_public_channel_safely(username: str) -> bool:
-    """Ochiq kanalga qo'shilish -- xatoliklarni to'g'ri ushlab."""
-    try:
-        await client(JoinChannelRequest(username))
-        print(f"Muvaffaqiyatli qo'shildi: {username}")
-        return True
-    except UserAlreadyParticipantError:
-        print(f"Allaqachon a'zo: {username}")
-        return True
-    except PeerFloodError:
-        print(
-            "PeerFloodError -- juda ko'p ijtimoiy amal bajarilyapti. "
-            "DARHOL to'xtash va bir necha soat kutish kerak."
-        )
-        return False
-    except FloodWaitError as e:
-        print(f"FloodWait: {e.seconds} soniya kutish kerak.")
-        return False
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+MAX_CONCURRENT_DOWNLOADS = 3  # bir vaqtda ko'pi bilan shuncha yuklab olish
 
 
-async def join_private_group_by_invite(invite_hash: str) -> bool:
-    """Yopiq guruhga taklif havolasi orqali qo'shilish."""
-    try:
-        await client(ImportChatInviteRequest(invite_hash))
-        print("Yopiq guruhga muvaffaqiyatli qo'shildi.")
-        return True
-    except InviteHashExpiredError:
-        print("Taklif havolasi muddati o'tgan yoki bekor qilingan.")
-        return False
-    except PeerFloodError:
-        print("PeerFloodError -- to'xtash kerak.")
-        return False
+def make_progress_callback(label: str):
+    def callback(received: int, total: int) -> None:
+        pct = (received / total * 100) if total else 0
+        print(f"\r{label}: {pct:5.1f}% ({received}/{total} bayt)", end="")
+    return callback
 
 
-async def join_many_with_responsible_pacing(usernames: list[str]) -> None:
-    """MAS'ULIYATLI namuna: guruhga qo'shilishlar orasida tasodifiy,
-    sezilarli tanaffus bilan. Ommaviy, tez qo'shilish HECH QACHON
-    tavsiya etilmaydi -- bu shunchaki xavfni kamaytiruvchi namuna,
-    ommaviy avtomatlashtirishni rag'batlantirish emas."""
-    for username in usernames:
-        ok = await join_public_channel_safely(username)
-        if not ok:
-            print("Xavfsizlik uchun jarayon to'xtatildi.")
-            break
-        pause = random.uniform(120, 600)  # 2-10 daqiqa
-        print(f"Keyingi qo'shilishgacha {pause / 60:.1f} daqiqa kutamiz...")
-        await asyncio.sleep(pause)
+async def download_one(message, semaphore: asyncio.Semaphore) -> None:
+    async with semaphore:
+        if not message.file:
+            return
+        filename = f"{message.chat_id}_{message.id}_{message.file.name or 'media'}"
+        target = DOWNLOAD_DIR / filename
+        if target.exists():
+            print(f"O'tkazib yuborildi (mavjud): {filename}")
+            return
+        try:
+            await client.download_media(
+                message, file=str(target), progress_callback=make_progress_callback(filename)
+            )
+            print()  # progress qatoridan keyin yangi qator
+        except FloodWaitError as e:
+            print(f"\nFloodWait media yuklashda: {e.seconds}s kutamiz.")
+            await asyncio.sleep(e.seconds)
+            await download_one(message, semaphore)
 
 
-async def main() -> None:
+async def bulk_download_photos(chat: str, limit: int = 100) -> None:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+    tasks = []
     async with client:
-        # Faqat DEMO uchun -- haqiqiy ro'yxat juda kichik bo'lishi kerak
-        await join_many_with_responsible_pacing(["@ochiq_kanal_namunasi"])
+        async for message in client.iter_messages(
+            chat, limit=limit, filter=InputMessagesFilterPhotos
+        ):
+            tasks.append(asyncio.create_task(download_one(message, semaphore)))
+        await asyncio.gather(*tasks)
+    print(f"\nJami {len(tasks)} ta media uchun yuklab olish yakunlandi.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(bulk_download_photos("@ochiq_kanal_namunasi", limit=50))
