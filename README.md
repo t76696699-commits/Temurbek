@@ -1,36 +1,42 @@
-from pyrogram import Client, filters
+import os
+from pyrogram import Client
 
-app = Client("filters_demo")
+API_ID = int(os.environ["TG_API_ID"])
+API_HASH = os.environ["TG_API_HASH"]
+BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 
+# 1) Fayl-asosli sessiya, alohida papkada (git'ga qo'shilmaydi)
+app_persistent = Client(
+    "prod_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="./sessions",  # .gitignore: sessions/*.session*
+)
 
-async def _is_admin(_, client, message):
-    member = await client.get_chat_member(message.chat.id, message.from_user.id)
-    return member.status in ("administrator", "creator")
-
-
-is_admin = filters.create(_is_admin)
-
-
-@app.on_message(filters.command("ban") & filters.group & is_admin)
-async def ban_handler(client, message):
-    await message.reply_text("Foydalanuvchi ban qilindi (demo).")
-
-
-@app.on_message(filters.command("ban") & filters.group & ~is_admin)
-async def ban_denied(client, message):
-    await message.reply_text("Sizda /ban buyrug'i uchun huquq yo'q.")
-
-
-@app.on_message(filters.photo | filters.video)
-async def media_handler(client, message):
-    kind = "rasm" if message.photo else "video"
-    await message.reply_text(f"{kind.capitalize()} qabul qilindi.")
+# 2) In-memory sessiya — diskka hech narsa yozilmaydi (masalan, testlar uchun)
+app_ephemeral = Client(
+    "test_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True,
+)
 
 
-@app.on_message(filters.private & filters.text & ~filters.command("start"))
-async def private_text(client, message):
-    await message.reply_text(f"Shaxsiy xabar: {message.text}")
+async def export_portable_session():
+    """Foydalanuvchi rejimidagi sessiyani boshqa muhitga ko'chirish uchun
+    bitta matn qatoriga aylantiradi. Bu qatorni FAQAT maxfiy o'zgaruvchi
+    sifatida saqlang (masalan CI secrets), hech qachon logga chiqarmang."""
+    async with Client("user_account", api_id=API_ID, api_hash=API_HASH) as user_app:
+        session_string = await user_app.export_session_string()
+        # Bu yerda print() ATAYLAB yo'q — production kodida session_string
+        # hech qachon konsolga yoki logga chiqarilmaydi.
+        return session_string
 
 
-if __name__ == "__main__":
-    app.run()
+async def restore_from_string(session_string: str) -> Client:
+    """Boshqa muhitda faylsiz, session_string orqali qayta ulanish."""
+    app = Client("restored", api_id=API_ID, api_hash=API_HASH, session_string=session_string)
+    await app.start()
+    return app
