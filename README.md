@@ -1,5 +1,8 @@
-"""Graceful shutdown: SIGTERM'ni tutish, joriy vazifalarni tugatish,
-resurslarni tozalab yopish. aiohttp-webhook misolida health-check bilan.
+"""Capstone loyiha skeleti: barcha qismlarni bog'lovchi entrypoint.
+
+bot.py — RedisStorage, Payments handlerlari, i18n/logging middleware'lari
+va graceful shutdown'ni bitta joyda ulaydi. Har bir qism avvalgi
+darslarda alohida chuqur o'rganilgan — bu yerda faqat ULASH ko'rsatilgan.
 """
 from __future__ import annotations
 
@@ -7,91 +10,90 @@ import asyncio
 import logging
 import signal
 
-from aiohttp import web
-from aiogram import Bot, Dispatcher
+import structlog
+from aiogram import Bot, Dispatcher, Router
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
-logger = logging.getLogger("shutdown")
+# --- 4-dars: Redis FSM storage --------------------------------------------
+storage = RedisStorage.from_url("redis://localhost:6379/0")
 
-DRAIN_TIMEOUT_SECONDS = 30
-_in_flight: set[asyncio.Task] = set()
-_ready = True   # readiness probe holati
+# --- 7-dars: strukturaviy logging -----------------------------------------
+logger = structlog.get_logger("capstone_bot")
 
+# --- 8-dars: rate limiting va 9-dars: middleware zanjiri -------------------
+from rate_limit_middleware import RedisRateLimitMiddleware   # 8-darsdan
+from logging_middleware import RequestContextMiddleware      # 7-darsdan
+from i18n_middleware import I18nMiddleware                   # 11-darsdan
 
-def track(coro) -> asyncio.Task:
-    """Har bir handler task'ini ro'yxatga oladi — shutdown paytida
-    qaysilari hali tugallanmaganini bilish uchun."""
-    task = asyncio.create_task(coro)
-    _in_flight.add(task)
-    task.add_done_callback(_in_flight.discard)
-    return task
+# --- 0-1-darslar: Mini App + initData validatsiyasi ------------------------
+from mini_app_routes import mini_app_router                  # 0-1-darslardan
 
+# --- 2-3-darslar: real Payments ---------------------------------------------
+from payments_router import payments_router                  # 2-3-darslardan
 
-async def readiness_probe(request: web.Request) -> web.Response:
-    # Orkestrator shutdown boshlanganda buni "not ready" deb o'qib,
-    # yangi trafikni boshqa instansga yo'naltiradi.
-    if _ready:
-        return web.Response(status=200, text="ready")
-    return web.Response(status=503, text="draining")
-
-
-async def liveness_probe(request: web.Request) -> web.Response:
-    # Joriy so'rovlar tugagunga qadar "ha" qaytadi — jarayon hali
-    # osilib qolmagan, faqat yangi ish qabul qilmayapti.
-    return web.Response(status=200, text="alive")
+# --- 12-dars: graceful shutdown ---------------------------------------------
+from graceful_shutdown import install_signal_handlers
 
 
-async def graceful_shutdown(bot: Bot) -> None:
-    global _ready
-    logger.info("SIGTERM qabul qilindi — yangi so'rovlarni to'xtatish")
-    _ready = False   # 1-qadam: yangi ishni qabul qilishni to'xtatish
+def build_dispatcher(db, redis_client) -> Dispatcher:
+    dp = Dispatcher(storage=storage)
 
-    if _in_flight:
-        logger.info("joriy %d ta vazifa tugashi kutilmoqda (timeout=%ss)",
-                     len(_in_flight), DRAIN_TIMEOUT_SECONDS)
-        done, pending = await asyncio.wait(
-            _in_flight, timeout=DRAIN_TIMEOUT_SECONDS
-        )
-        for task in pending:
-            logger.warning("vazifa %s belgilangan vaqtda tugamadi — bekor qilinmoqda", task)
-            task.cancel()
+    # Outer middleware — HAR bir update uchun, tartib muhim (9-dars):
+    # avval kontekst/log, keyin locale, keyin rate-limit.
+    dp.update.outer_middleware(RequestContextMiddleware())
+    dp.update.outer_middleware(I18nMiddleware(db=db))
+    dp.update.outer_middleware(RedisRateLimitMiddleware(redis=redis_client))
 
-    await bot.session.close()   # 3-qadam: resurslarni yopish
-    logger.info("bot sessiyasi yopildi, jarayon chiqadi")
-
-
-def install_signal_handlers(bot: Bot) -> None:
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    def _handle_signal() -> None:
-        stop_event.set()
-
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
-
-    async def _waiter() -> None:
-        await stop_event.wait()
-        await graceful_shutdown(bot)
-
-    loop.create_task(_waiter())
+    dp.include_router(mini_app_router)
+    dp.include_router(payments_router)
+    return dp
 
 
 async def main() -> None:
-    bot = Bot(token="BOT_TOKEN")
-    dp = Dispatcher()
-    install_signal_handlers(bot)
+    bot = Bot(
+        token="BOT_TOKEN",
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
 
-    app = web.Application()
-    app.router.add_get("/health/ready", readiness_probe)
-    app.router.add_get("/health/live", liveness_probe)
+    import redis.asyncio as redis
+    redis_client = redis.from_url("redis://localhost:6379/1")
+    db = None  # loyihaning haqiqiy DB ulanish obyekti
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
-    await site.start()
+    dp = build_dispatcher(db, redis_client)
+    install_signal_handlers(bot)   # 12-dars: SIGTERM -> drain -> yopish
 
-    await dp.start_polling(bot, handle_signals=False)  # o'z signal handler'imiz bor
+    logger.info("capstone_bot_started")
+    await dp.start_polling(bot, handle_signals=False)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# --- 5-dars: capstone uchun minimal test misoli ----------------------------
+# To'liq testlash 5-darsda o'rgangan pytest+AsyncMock naqshiga tayanadi;
+# bu yerda faqat ulash to'g'riligini tekshiruvchi bitta misol keltirilgan.
+import pytest
+from unittest.mock import AsyncMock
+
+
+@pytest.mark.asyncio
+async def test_build_dispatcher_includes_both_routers() -> None:
+    fake_redis = AsyncMock()
+    dp = build_dispatcher(db=None, redis_client=fake_redis)
+
+    included_routers = {r.name for r in dp.sub_routers}
+    assert "mini_app" in included_routers
+    assert "payments" in included_routers
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_closes_bot_session() -> None:
+    fake_bot = AsyncMock()
+    from graceful_shutdown import graceful_shutdown
+
+    await graceful_shutdown(fake_bot)
+
+    fake_bot.session.close.assert_awaited_once()
