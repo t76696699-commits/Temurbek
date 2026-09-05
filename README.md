@@ -1,51 +1,46 @@
-# O'RNATISH: pip install pyrogram tgcrypto
-#
-# Bu darsda hali Client'ni to'liq sozlamaymiz (keyingi darsda batafsil) —
-# lekin uchta kutubxonaning "salom dunyo" darajasidagi farqini his qilish
-# uchun qisqacha taqqoslash keltirilgan. Faqat Pyrogram qismi shu kursda
-# to'liq ishlaydigan holatga keladi.
+# pip install pyrogram tgcrypto python-dotenv
+import os
+from pyrogram import Client
 
-# --- Pyrogram (shu kurs markazi) ---
-from pyrogram import Client, filters
+from dotenv import load_dotenv
+load_dotenv()
 
-app = Client("my_account")  # nomi bilan session fayli yaratiladi
+API_ID = int(os.environ["TG_API_ID"])       # my.telegram.org'dan
+API_HASH = os.environ["TG_API_HASH"]        # my.telegram.org'dan
+BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")  # bo'lsa — bot rejimi, bo'lmasa — foydalanuvchi rejimi
 
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_handler(client: Client, message):
+def build_client() -> Client:
+    """Bitta funksiya — ikkala rejimni ham qo'llab-quvvatlaydi.
+    BOT_TOKEN mavjud bo'lsa bot sifatida, aks holda interaktiv
+    foydalanuvchi (userbot) sifatida ulanadi."""
+    if BOT_TOKEN:
+        return Client(
+            "bot_session",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=BOT_TOKEN,
+            workdir="./sessions",
+        )
+    return Client(
+        "user_session",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        workdir="./sessions",
+    )
+
+
+app = build_client()
+
+
+@app.on_message()
+async def whoami(client: Client, message):
+    me = await client.get_me()
+    mode = "BOT" if me.is_bot else "USER"
     await message.reply_text(
-        f"Salom, {message.from_user.first_name}! Men Pyrogram orqali ishlayapman."
+        f"Men [{mode}] rejimida ishlayapman: @{me.username or me.id}"
     )
 
 
 if __name__ == "__main__":
-    app.run()  # ichkarida connect() -> idle() -> disconnect() ni boshqaradi
-
-
-# --- Solishtirish uchun: aiogram'da xuddi shu handler (Bot API, HTTP) ---
-#
-# from aiogram import Bot, Dispatcher, F
-# from aiogram.filters import Command
-#
-# bot = Bot(token="...")
-# dp = Dispatcher()
-#
-# @dp.message(Command("start"))
-# async def start_handler(message):
-#     await message.answer(f"Salom, {message.from_user.first_name}!")
-#
-# aiogram'da faqat bot_token bor — foydalanuvchi hisobi sifatida kira olmaysiz.
-
-
-# --- Solishtirish uchun: Telethon'da xuddi shu handler (MTProto, ham dual-mode) ---
-#
-# from telethon import TelegramClient, events
-#
-# client = TelegramClient("my_account", api_id, api_hash)
-#
-# @client.on(events.NewMessage(pattern="/start"))
-# async def start_handler(event):
-#     await event.reply("Salom!")
-#
-# client.start()  # yoki client.start(bot_token="...") — bot rejimi uchun
-# client.run_until_disconnected()
+    app.run()
