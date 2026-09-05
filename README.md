@@ -1,113 +1,92 @@
-"""Multi-bot (bot-farm) polling launcher.
+"""i18n middleware: foydalanuvchi tilini aniqlash va handlerlarga uzatish.
 
-Bitta kod bazasi, N ta mustaqil Bot obyekti, bitta umumiy Dispatcher.
-Har bir tenant bot_registry jadvalidan o'qiladi; kodni o'zgartirmasdan
-yangi qator qo'shish orqali yangi mijoz ulanadi.
+Haqiqiy loyihada tarjima .mo fayllaridan gettext orqali o'qiladi;
+bu yerda tushunarli bo'lishi uchun kichik in-memory lug'at ishlatilgan,
+lekin _()/ngettext() interfeysi haqiqiy gettext bilan bir xil.
 """
-import asyncio
-import logging
-from dataclasses import dataclass
+from __future__ import annotations
 
-from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import CommandStart
-from aiogram.types import Message
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+import gettext
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
-logger = logging.getLogger("bot_farm")
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject, User
 
+LOCALES_DIR = Path(__file__).parent / "locales"
+DEFAULT_LOCALE = "uz"
+SUPPORTED_LOCALES = ("uz", "ru")
 
-@dataclass(frozen=True)
-class TenantConfig:
-    bot_id: int
-    token: str
-    tenant_name: str
-
-
-async def load_active_tenants(db) -> list[TenantConfig]:
-    """bot_registry jadvalidan faol tenantlarni o'qiydi."""
-    rows = await db.fetch_all(
-        "SELECT bot_id, token, tenant_name FROM bot_registry WHERE is_active = true"
-    )
-    return [TenantConfig(r["bot_id"], r["token"], r["tenant_name"]) for r in rows]
-
-
-router = Router(name="shared-handlers")
-
-
-@router.message(CommandStart())
-async def cmd_start(message: Message, bot: Bot) -> None:
-    # bot.id — aiogram avtomatik to'ldiradi (get_me orqali), shu yerdan
-    # qaysi tenant ekanini bilib olamiz, keyingi so'rovlarda bot_id
-    # sifatida ishlatamiz.
-    me = await bot.get_me()
-    await message.answer(
-        f"Salom! Siz @{me.username} boti bilan gaplashyapsiz "
-        f"(bot_id={bot.id})."
-    )
-
-
-async def run_one_bot(dp: Dispatcher, bot: Bot, tenant: TenantConfig) -> None:
-    """Bitta tenant uchun polling tsikli — xato boshqalarni to'xtatmaydi."""
+# Har bir til uchun oldindan compile qilingan .mo asosida GNUTranslations
+# obyektini keshda saqlaymiz — har update uchun diskdan qayta o'qimaslik uchun.
+_translations: dict[str, gettext.NullTranslations] = {}
+for lang in SUPPORTED_LOCALES:
     try:
-        logger.info("tenant %s (bot_id=%s) polling boshlandi", tenant.tenant_name, tenant.bot_id)
-        await dp.start_polling(bot, handle_signals=False)
-    except Exception:
-        logger.exception("tenant %s (bot_id=%s) polling'da xato", tenant.tenant_name, tenant.bot_id)
-    finally:
-        await bot.session.close()
-
-
-async def main(db) -> None:
-    dp = Dispatcher()
-    dp.include_router(router)
-
-    tenants = await load_active_tenants(db)
-    if not tenants:
-        logger.warning("faol tenant topilmadi")
-        return
-
-    bots = {
-        t.bot_id: Bot(
-            token=t.token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        _translations[lang] = gettext.translation(
+            "messages", localedir=LOCALES_DIR, languages=[lang]
         )
-        for t in tenants
-    }
+    except FileNotFoundError:
+        _translations[lang] = gettext.NullTranslations()
 
-    await asyncio.gather(
-        *(run_one_bot(dp, bots[t.bot_id], t) for t in tenants)
+
+async def get_saved_locale(user_id: int, db) -> str | None:
+    """Foydalanuvchi oldin tanlagan tilni DB'dan o'qiydi (mavjud bo'lsa)."""
+    row = await db.fetch_one(
+        "SELECT locale FROM user_preferences WHERE user_id = :uid", {"uid": user_id}
     )
+    return row["locale"] if row else None
 
 
-# ── Webhook rejimi uchun yo'naltiruvchi (aiohttp misolida) ──────────────
-from aiohttp import web
-from aiogram.types import Update
+class I18nMiddleware(BaseMiddleware):
+    """Outer middleware — har bir update uchun locale'ni aniqlab, handlerga
+    tarjima funksiyasini ('_' va 'ngettext') data orqali uzatadi."""
 
-BOTS_REGISTRY: dict[int, Bot] = {}   # ishga tushishda load_active_tenants'dan to'ldiriladi
-DISPATCHER: Dispatcher | None = None
+    def __init__(self, db) -> None:
+        self.db = db
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user: User | None = data.get("event_from_user")
+        locale = DEFAULT_LOCALE
+        if user is not None:
+            saved = await get_saved_locale(user.id, self.db)
+            if saved in SUPPORTED_LOCALES:
+                locale = saved
+            elif user.language_code in SUPPORTED_LOCALES:
+                locale = user.language_code
+
+        translation = _translations.get(locale, _translations[DEFAULT_LOCALE])
+        data["locale"] = locale
+        data["_"] = translation.gettext
+        data["ngettext"] = translation.ngettext
+        return await handler(event, data)
 
 
-async def webhook_handler(request: web.Request) -> web.Response:
-    bot_id = int(request.match_info["bot_id"])
-    bot = BOTS_REGISTRY.get(bot_id)
-    if bot is None:
-        # Mavjud bo'lmagan yoki o'chirilgan tenant — 404, xato jim yutilmaydi.
-        return web.Response(status=404, text="unknown bot_id")
+# ── Handler misoli: middleware kiritgan '_' va 'ngettext'dan foydalanish ──
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message
 
-    data = await request.json()
-    update = Update.model_validate(data)
-    assert DISPATCHER is not None
-    await DISPATCHER.feed_update(bot=bot, update=update)
-    return web.Response(status=200)
+router = Router()
 
 
-def build_webhook_app() -> web.Application:
-    app = web.Application()
-    app.router.add_post("/webhook/{bot_id}", webhook_handler)
-    return app
+@router.message(Command("kurslar"))
+async def show_courses_count(message: Message, _: Callable[[str], str],
+                              ngettext: Callable[[str, str, int], str]) -> None:
+    count = await get_active_courses_count()
+    # ngettext o'zi son bo'yicha to'g'ri shaklni tanlaydi — dasturchi
+    # if count == 1 deb yozmaydi.
+    text = ngettext(
+        "Sizda {n} ta faol kurs bor.",
+        "Sizda {n} ta faol kurs bor.",
+        count,
+    ).format(n=count)
+    await message.answer(_( "Ma'lumot: " ) + text)
 
 
-if __name__ == "__main__":
-    # db — loyihangizning haqiqiy DB ulanish obyekti bilan almashtiriladi
-    asyncio.run(main(db=None))
+async def get_active_courses_count() -> int:
+    return 3
