@@ -1,52 +1,35 @@
 from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
 
-app = Client("handlers_demo")
-
-
-# Узкий (специфичный) handler — регистрируется ПЕРВЫМ
-@app.on_message(filters.command("start"), group=0)
-async def start_handler(client, message):
-    await message.reply_text("Bu /start uchun maxsus handler.")
+app = Client("filters_demo")
 
 
-# Log qiluvchi handler — mustaqil guruhda, HAR BIR xabarni ko'radi
-@app.on_message(group=-1)
-async def logger(client, message):
-    print(f"[LOG] chat={message.chat.id} matn={message.text!r}")
-    message.continue_propagation()  # shu guruhdagi keyingisiga ham bersin
+async def _is_admin(_, client, message):
+    member = await client.get_chat_member(message.chat.id, message.from_user.id)
+    return member.status in ("administrator", "creator")
 
 
-# Keng (umumiy) handler — ATAYLAB oxirida, aks holda hammasini "yutib qo'yadi"
-@app.on_message(filters.text, group=0)
-async def fallback_handler(client, message):
-    await message.reply_text(f"Tushunmadim: {message.text}")
+is_admin = filters.create(_is_admin)
 
 
-@app.on_callback_query()
-async def on_button(client, callback_query):
-    await callback_query.answer("Tugma bosildi!")
+@app.on_message(filters.command("ban") & filters.group & is_admin)
+async def ban_handler(client, message):
+    await message.reply_text("Foydalanuvchi ban qilindi (demo).")
 
 
-# Xabar tahrirlanganda ishga tushadi — jadvaldagi yana bir handler turi
-@app.on_edited_message(filters.text)
-async def on_edit(client, message):
-    print(f"[EDIT] chat={message.chat.id} yangi matn: {message.text!r}")
+@app.on_message(filters.command("ban") & filters.group & ~is_admin)
+async def ban_denied(client, message):
+    await message.reply_text("Sizda /ban buyrug'i uchun huquq yo'q.")
 
 
-# Xabar(lar) o'chirilganda ishga tushadi
-@app.on_deleted_messages()
-async def on_delete(client, messages):
-    ids = [m.id for m in messages]
-    print(f"[DELETE] o'chirilgan xabar id'lari: {ids}")
+@app.on_message(filters.photo | filters.video)
+async def media_handler(client, message):
+    kind = "rasm" if message.photo else "video"
+    await message.reply_text(f"{kind.capitalize()} qabul qilindi.")
 
 
-# Guruhga a'zo qo'shildi/chiqdi/ban bo'ldi — moderatsiya uchun foydali
-@app.on_chat_member_updated()
-async def on_member_change(client, update):
-    if update.new_chat_member and update.new_chat_member.status == ChatMemberStatus.MEMBER:
-        user = update.new_chat_member.user
-        print(f"[JOIN] {user.first_name} guruhga qo'shildi")
+@app.on_message(filters.private & filters.text & ~filters.command("start"))
+async def private_text(client, message):
+    await message.reply_text(f"Shaxsiy xabar: {message.text}")
 
 
 if __name__ == "__main__":
