@@ -1,47 +1,53 @@
-# pip install pyrogram tgcrypto python-dotenv
-import os
-from pyrogram import Client
+from pyrogram import Client, filters
+from pyrogram.enums import ChatMemberStatus
 
-from dotenv import load_dotenv
-load_dotenv()
-
-API_ID = int(os.environ["TG_API_ID"])       # my.telegram.org'dan
-API_HASH = os.environ["TG_API_HASH"]        # my.telegram.org'dan
-BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")  # bo'lsa — bot rejimi, bo'lmasa — foydalanuvchi rejimi
+app = Client("handlers_demo")
 
 
-def build_client() -> Client:
-    """Bitta funksiya — ikkala rejimni ham qo'llab-quvvatlaydi.
-    BOT_TOKEN mavjud bo'lsa bot sifatida, aks holda interaktiv
-    foydalanuvchi (userbot) sifatida ulanadi."""
-    if BOT_TOKEN:
-        return Client(
-            "bot_session",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            bot_token=BOT_TOKEN,
-            workdir="./sessions",
-        )
-    return Client(
-        "user_session",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        workdir="./sessions",
-    )
+# Узкий (специфичный) handler — регистрируется ПЕРВЫМ
+@app.on_message(filters.command("start"), group=0)
+async def start_handler(client, message):
+    await message.reply_text("Bu /start uchun maxsus handler.")
 
 
-app = build_client()
+# Log qiluvchi handler — mustaqil guruhda, HAR BIR xabarni ko'radi
+@app.on_message(group=-1)
+async def logger(client, message):
+    print(f"[LOG] chat={message.chat.id} matn={message.text!r}")
+    message.continue_propagation()  # shu guruhdagi keyingisiga ham bersin
 
 
-@app.on_message()
-async def whoami(client: Client, message):
-    me = await client.get_me()
-    mode = "BOT" if me.is_bot else "USER"
-    await message.reply_text(
-        f"Men [{mode}] rejimida ishlayapman: @{me.username or me.id}"
-    )
+# Keng (umumiy) handler — ATAYLAB oxirida, aks holda hammasini "yutib qo'yadi"
+@app.on_message(filters.text, group=0)
+async def fallback_handler(client, message):
+    await message.reply_text(f"Tushunmadim: {message.text}")
+
+
+@app.on_callback_query()
+async def on_button(client, callback_query):
+    await callback_query.answer("Tugma bosildi!")
+
+
+# Xabar tahrirlanganda ishga tushadi — jadvaldagi yana bir handler turi
+@app.on_edited_message(filters.text)
+async def on_edit(client, message):
+    print(f"[EDIT] chat={message.chat.id} yangi matn: {message.text!r}")
+
+
+# Xabar(lar) o'chirilganda ishga tushadi
+@app.on_deleted_messages()
+async def on_delete(client, messages):
+    ids = [m.id for m in messages]
+    print(f"[DELETE] o'chirilgan xabar id'lari: {ids}")
+
+
+# Guruhga a'zo qo'shildi/chiqdi/ban bo'ldi — moderatsiya uchun foydali
+@app.on_chat_member_updated()
+async def on_member_change(client, update):
+    if update.new_chat_member and update.new_chat_member.status == ChatMemberStatus.MEMBER:
+        user = update.new_chat_member.user
+        print(f"[JOIN] {user.first_name} guruhga qo'shildi")
 
 
 if __name__ == "__main__":
     app.run()
-
