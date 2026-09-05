@@ -1,92 +1,97 @@
-"""i18n middleware: foydalanuvchi tilini aniqlash va handlerlarga uzatish.
-
-Haqiqiy loyihada tarjima .mo fayllaridan gettext orqali o'qiladi;
-bu yerda tushunarli bo'lishi uchun kichik in-memory lug'at ishlatilgan,
-lekin _()/ngettext() interfeysi haqiqiy gettext bilan bir xil.
+"""Graceful shutdown: SIGTERM'ni tutish, joriy vazifalarni tugatish,
+resurslarni tozalab yopish. aiohttp-webhook misolida health-check bilan.
 """
 from __future__ import annotations
 
-import gettext
-from pathlib import Path
-from typing import Any, Awaitable, Callable
+import asyncio
+import logging
+import signal
 
-from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, User
+from aiohttp import web
+from aiogram import Bot, Dispatcher
 
-LOCALES_DIR = Path(__file__).parent / "locales"
-DEFAULT_LOCALE = "uz"
-SUPPORTED_LOCALES = ("uz", "ru")
+logger = logging.getLogger("shutdown")
 
-# Har bir til uchun oldindan compile qilingan .mo asosida GNUTranslations
-# obyektini keshda saqlaymiz — har update uchun diskdan qayta o'qimaslik uchun.
-_translations: dict[str, gettext.NullTranslations] = {}
-for lang in SUPPORTED_LOCALES:
-    try:
-        _translations[lang] = gettext.translation(
-            "messages", localedir=LOCALES_DIR, languages=[lang]
+DRAIN_TIMEOUT_SECONDS = 30
+_in_flight: set[asyncio.Task] = set()
+_ready = True   # readiness probe holati
+
+
+def track(coro) -> asyncio.Task:
+    """Har bir handler task'ini ro'yxatga oladi — shutdown paytida
+    qaysilari hali tugallanmaganini bilish uchun."""
+    task = asyncio.create_task(coro)
+    _in_flight.add(task)
+    task.add_done_callback(_in_flight.discard)
+    return task
+
+
+async def readiness_probe(request: web.Request) -> web.Response:
+    # Orkestrator shutdown boshlanganda buni "not ready" deb o'qib,
+    # yangi trafikni boshqa instansga yo'naltiradi.
+    if _ready:
+        return web.Response(status=200, text="ready")
+    return web.Response(status=503, text="draining")
+
+
+async def liveness_probe(request: web.Request) -> web.Response:
+    # Joriy so'rovlar tugagunga qadar "ha" qaytadi — jarayon hali
+    # osilib qolmagan, faqat yangi ish qabul qilmayapti.
+    return web.Response(status=200, text="alive")
+
+
+async def graceful_shutdown(bot: Bot) -> None:
+    global _ready
+    logger.info("SIGTERM qabul qilindi — yangi so'rovlarni to'xtatish")
+    _ready = False   # 1-qadam: yangi ishni qabul qilishni to'xtatish
+
+    if _in_flight:
+        logger.info("joriy %d ta vazifa tugashi kutilmoqda (timeout=%ss)",
+                     len(_in_flight), DRAIN_TIMEOUT_SECONDS)
+        done, pending = await asyncio.wait(
+            _in_flight, timeout=DRAIN_TIMEOUT_SECONDS
         )
-    except FileNotFoundError:
-        _translations[lang] = gettext.NullTranslations()
+        for task in pending:
+            logger.warning("vazifa %s belgilangan vaqtda tugamadi — bekor qilinmoqda", task)
+            task.cancel()
+
+    await bot.session.close()   # 3-qadam: resurslarni yopish
+    logger.info("bot sessiyasi yopildi, jarayon chiqadi")
 
 
-async def get_saved_locale(user_id: int, db) -> str | None:
-    """Foydalanuvchi oldin tanlagan tilni DB'dan o'qiydi (mavjud bo'lsa)."""
-    row = await db.fetch_one(
-        "SELECT locale FROM user_preferences WHERE user_id = :uid", {"uid": user_id}
-    )
-    return row["locale"] if row else None
+def install_signal_handlers(bot: Bot) -> None:
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _handle_signal() -> None:
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    async def _waiter() -> None:
+        await stop_event.wait()
+        await graceful_shutdown(bot)
+
+    loop.create_task(_waiter())
 
 
-class I18nMiddleware(BaseMiddleware):
-    """Outer middleware — har bir update uchun locale'ni aniqlab, handlerga
-    tarjima funksiyasini ('_' va 'ngettext') data orqali uzatadi."""
+async def main() -> None:
+    bot = Bot(token="BOT_TOKEN")
+    dp = Dispatcher()
+    install_signal_handlers(bot)
 
-    def __init__(self, db) -> None:
-        self.db = db
+    app = web.Application()
+    app.router.add_get("/health/ready", readiness_probe)
+    app.router.add_get("/health/live", liveness_probe)
 
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
-        user: User | None = data.get("event_from_user")
-        locale = DEFAULT_LOCALE
-        if user is not None:
-            saved = await get_saved_locale(user.id, self.db)
-            if saved in SUPPORTED_LOCALES:
-                locale = saved
-            elif user.language_code in SUPPORTED_LOCALES:
-                locale = user.language_code
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
 
-        translation = _translations.get(locale, _translations[DEFAULT_LOCALE])
-        data["locale"] = locale
-        data["_"] = translation.gettext
-        data["ngettext"] = translation.ngettext
-        return await handler(event, data)
+    await dp.start_polling(bot, handle_signals=False)  # o'z signal handler'imiz bor
 
 
-# ── Handler misoli: middleware kiritgan '_' va 'ngettext'dan foydalanish ──
-from aiogram import Router
-from aiogram.filters import Command
-from aiogram.types import Message
-
-router = Router()
-
-
-@router.message(Command("kurslar"))
-async def show_courses_count(message: Message, _: Callable[[str], str],
-                              ngettext: Callable[[str, str, int], str]) -> None:
-    count = await get_active_courses_count()
-    # ngettext o'zi son bo'yicha to'g'ri shaklni tanlaydi — dasturchi
-    # if count == 1 deb yozmaydi.
-    text = ngettext(
-        "Sizda {n} ta faol kurs bor.",
-        "Sizda {n} ta faol kurs bor.",
-        count,
-    ).format(n=count)
-    await message.answer(_( "Ma'lumot: " ) + text)
-
-
-async def get_active_courses_count() -> int:
-    return 3
+if __name__ == "__main__":
+    asyncio.run(main())
