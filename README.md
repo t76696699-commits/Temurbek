@@ -1,53 +1,59 @@
-def build_request(prompt: str) -> dict:
-    """
-    OpenAI-uslubidagi so'rov lug'atini (dict) shakllantirib beruvchi funksiya.
-    """
+from __future__ import annotations
+import httpx
+
+
+class ProviderError(Exception):
+    pass
+
+
+def failure_review(error_code: str, message: str) -> dict:
+    """grok_review.py dagi _failure_review bilan bir xil g'oya."""
     return {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": "Sen yordamchi dasturchisan."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 200
+        "grade": "F",
+        "points": 0,
+        "feedback": message,
+        "error": error_code,
+        "provider": None,
     }
 
 
-def extract_answer(response: dict) -> str:
-    """
-    OpenAI-uslubidagi javob lug'atidan matnni havfsiz ajratib oluvchi funksiya.
-    KeyError xatoligi chiqmasligi uchun try-except ishlatilgan.
-    """
+async def analyze_with_soft_failure(call_chain_fn, prompt: str) -> dict:
+    """'Yumshoq' xato — fon vazifasi/avtomatik oqim uchun mos."""
     try:
-        return response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return "Xatolik: Javob lug'atidan matnni ajratib bo'lmadi."
+        text, parsed, provider, attempts = await call_chain_fn(prompt)
+        parsed["provider"] = provider
+        return parsed
+    except ProviderError as e:
+        return failure_review("all_providers_failed", f"AI baholash muvaffaqiyatsiz: {e}")
 
 
-# --- TEKSHIRISH (DEMO) ---
+async def analyze_with_hard_failure(call_chain_fn, prompt: str) -> dict:
+    """'Qattiq' xato — foydalanuvchi kutayotgan endpoint uchun mos
+    (ai_review.py'dagi raise_on_error=True bilan bir xil g'oya)."""
+    try:
+        text, parsed, provider, attempts = await call_chain_fn(prompt)
+        parsed["provider"] = provider
+        return parsed
+    except ProviderError as e:
+        # Bu yerda real kodda FastAPI'ning HTTPException ko'tariladi;
+        # bu darsda faqat g'oyani ko'rsatish uchun oddiy Exception ishlatamiz.
+        raise RuntimeError(f"502 Bad Gateway: barcha AI provider ishlamadi ({e})")
 
-# 1. So'rov qurish
-user_prompt = "Python'da ro'yxatni teskari qanday qilaman?"
-request_data = build_request(user_prompt)
-print("--- Shakllantirilgan so'rov ---")
-print(request_data)
 
-# 2. Sun'iy (mock) javob lug'ati
-sample_response = {
-    "id": "chatcmpl-abc123",
-    "choices": [
-        {
-            "message": {
-                "role": "assistant",
-                "content": "my_list[::-1] yoki my_list.reverse() ishlatishingiz mumkin."
-            },
-            "finish_reason": "stop"
-        }
-    ],
-    "usage": {"prompt_tokens": 24, "completion_tokens": 18, "total_tokens": 42}
-}
-
-# 3. Javobdan matnni ajratib olish va chiqarish
-extracted_text = extract_answer(sample_response)
-print("\n--- Ajratib olingan javob matni ---")
-print(extracted_text)
+# ============================================================
+# call_chain ichidagi uch xil istisno turi (haqiqiy tuzilish)
+# ============================================================
+async def call_chain_error_handling_demo(caller, prompt: str, max_tokens: int) -> str:
+    attempts: list[str] = []
+    try:
+        return await caller(prompt, max_tokens)
+    except ProviderError as e:
+        attempts.append(f"provider_error: {e}")
+    except httpx.TimeoutException:
+        attempts.append("timeout: so'rov belgilangan vaqtda javob bermadi")
+    except httpx.HTTPError as e:
+        attempts.append(f"http_error: {type(e).__name__}: {e}")
+    except Exception as e:
+        # Kutilmagan xato ham dasturni portlatmasin.
+        attempts.append(f"unexpected: {type(e).__name__}")
+    raise ProviderError("; ".join(attempts))
