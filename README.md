@@ -1,72 +1,64 @@
 
-# Ikkala yondashuvni ham ko'ramiz: mahalliy (sentence-transformers) va
-# hosted API (Gemini). Ikkalasi ham bir xil natija turi qaytaradi:
-# suzuvchi sonlar ro'yxati (vektor).
+# Chunking funksiyalari: fixed-size (overlap bilan) va structure-aware
+# (HTML h3 teglariga asoslangan). Ikkinchisi haqiqiy lessons.text_content
+# ustida ishlaydi.
 
 from __future__ import annotations
-import math
+import re
 
 
-# ---------------------------------------------------------------------------
-# 1) Mahalliy model bilan (production'da haqiqiy kutubxona shunday ishlatiladi)
-# ---------------------------------------------------------------------------
-#
-#   from sentence_transformers import SentenceTransformer
-#   model = SentenceTransformer("all-MiniLM-L6-v2")   # bir marta yuklanadi
-#   vector = model.encode("Python funksiyalari qanday e'lon qilinadi")
-#   # vector — 384 ta floatdan iborat numpy array
-#
-# Bu kursda haqiqiy og'ir modelni yuklamasdan, PRINSIPNI ko'rsatish uchun
-# oddiy, deterministik "soxta embedding" funksiyasidan foydalanamiz — u
-# so'zlarning belgi-darajasidagi xususiyatlaridan foydalanib past o'lchamli
-# vektor yasaydi. Bu HAQIQIY semantik model emas (faqat harf statistikasiga
-# asoslangan), lekin vektor SHAKLI va API'si bir xil — shuning uchun
-# quyidagi cosine_similarity, chunking va pgvector darslari xuddi shu
-# funksiya ustida ishlaydi.
+def fixed_size_chunks(text: str, chunk_size: int = 500, overlap: int = 80) -> list[str]:
+    """Eng oddiy strategiya: har chunk_size belgidan keyin kesadi, har
+    keyingi chunk oldingisining oxirgi `overlap` belgisini qaytadan
+    o'z ichiga oladi."""
+    if overlap >= chunk_size:
+        raise ValueError("overlap chunk_size'dan kichik bo'lishi shart")
 
-def fake_embed(text: str, dims: int = 32) -> list[float]:
-    """Deterministik, kichik o'lchamli "o'quv uchun" embedding — haqiqiy
-    modeldagi kabi og'ir emas, lekin xuddi shunday: matn -> son vektori."""
-    text = text.lower().strip()
-    vector = [0.0] * dims
-    for i, ch in enumerate(text):
-        idx = (ord(ch) + i) % dims
-        vector[idx] += 1.0
-    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-    return [v / norm for v in vector]  # normallashtirilgan (uzunligi 1) vektor
+    chunks: list[str] = []
+    start = 0
+    text = text.strip()
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end].strip())
+        start = end - overlap  # oldingi chunk oxiridan overlap miqdorida orqaga qaytish
+    return [c for c in chunks if c]
 
 
-# ---------------------------------------------------------------------------
-# 2) Hosted API bilan (Gemini text-embedding-004) — haqiqiy HTTP so'rov shakli
-# ---------------------------------------------------------------------------
-
-import httpx
-from app.config import settings
-
-
-async def gemini_embed(text: str) -> list[float] | None:
-    """Gemini'ning embedding endpoint'iga haqiqiy so'rov shakli.
-    API kaliti bo'lmasa None qaytaradi (135-kursdagi ProviderError
-    uslubiga o'xshab) — chaqiruvchi kod fallback qila oladi."""
-    if not settings.GEMINI_API_KEY:
-        return None
-    url = (
-        f"{settings.GEMINI_API_URL.rstrip('/')}/text-embedding-004:embedContent"
-        f"?key={settings.GEMINI_API_KEY}"
-    )
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, json={"content": {"parts": [{"text": text}]}})
-        if resp.status_code >= 400:
-            return None
-        data = resp.json()
-        return data.get("embedding", {}).get("values")
+def structure_aware_chunks(html: str) -> list[dict]:
+    """lessons.text_content kabi HTML matnni <h3> sarlavhalari bo'yicha
+    bo'laklarga ajratadi — har bir bo'lim (sarlavha + undan keyingi matn)
+    alohida chunk bo'ladi. Production'da BeautifulSoup ishlatilardi;
+    bu yerda tushunarli bo'lishi uchun oddiy regex ishlatamiz."""
+    parts = re.split(r"(?=<h3>)", html)
+    chunks = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        heading_match = re.search(r"<h3>(.*?)</h3>", part)
+        heading = heading_match.group(1) if heading_match else "(sarlavhasiz)"
+        plain_text = re.sub(r"<[^>]+>", " ", part)
+        plain_text = re.sub(r"\s+", " ", plain_text).strip()
+        chunks.append({"heading": heading, "text": plain_text})
+    return chunks
 
 
 if __name__ == "__main__":
-    v1 = fake_embed("Python funksiyasi qanday yoziladi")
-    v2 = fake_embed("def kalit so'zi bilan funksiya e'lon qilinadi")
-    v3 = fake_embed("Pitsa retsepti: xamir va pomidor sousi")
-    print("V1 o'lchami:", len(v1))
-    print("V1[:5]:", [round(x, 3) for x in v1[:5]])
-    print("V2[:5]:", [round(x, 3) for x in v2[:5]])
-    print("V3[:5]:", [round(x, 3) for x in v3[:5]])
+    # Haqiqiy lessons.text_content'dan olingan qisqartirilgan namuna —
+    # o'zbekcha "CSS Flexbox" darsining shakli:
+    sample_lesson_html = (
+        "<h3>Flexbox nima</h3><p>Flexbox — elementlarni bir qatorda yoki "
+        "ustunda tekis joylashtirish uchun CSS xususiyati.</p>"
+        "<h3>flex-direction xususiyati</h3><p>flex-direction: column "
+        "elementlarni tepadan pastga joylashtiradi.</p>"
+        "<h3>justify-content va align-items</h3><p>Bu ikkalasi elementlarni "
+        "gorizontal va vertikal tekislash uchun ishlatiladi.</p>"
+    )
+
+    print("--- Fixed-size chunking (overlap=20) ---")
+    for i, c in enumerate(fixed_size_chunks(sample_lesson_html, chunk_size=80, overlap=20)):
+        print(f"chunk {i}: {c[:70]!r}...")
+
+    print("\n--- Structure-aware chunking (h3 asosida) ---")
+    for i, c in enumerate(structure_aware_chunks(sample_lesson_html)):
+        print(f"chunk {i} [{c['heading']}]: {c['text']}")
