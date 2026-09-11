@@ -1,53 +1,72 @@
 
-# Namuna: "RAG'siz" LLM chaqiruvi platforma ma'lumotlari haqida
-# nima uchun ishonchsiz javob berishini ko'rsatadi (135-kursdagi
-# _ask_ai() ORQALI — biz uni qaytadan yozmaymiz, faqat import qilamiz).
+# Ikkala yondashuvni ham ko'ramiz: mahalliy (sentence-transformers) va
+# hosted API (Gemini). Ikkalasi ham bir xil natija turi qaytaradi:
+# suzuvchi sonlar ro'yxati (vektor).
 
-import asyncio
-from app.services.grok_ai_client import _ask_ai
+from __future__ import annotations
+import math
 
 
-async def ask_without_rag(question: str) -> str | None:
-    """RAG'siz to'g'ridan-to'g'ri savol — modelning javobi platformaning
-    HAQIQIY ma'lumotlariga emas, o'zining umumiy "bilimi"ga asoslanadi."""
-    prompt = (
-        f"Savol: {question}\n\n"
-        "Iltimos aniq va qisqa javob ber."
+# ---------------------------------------------------------------------------
+# 1) Mahalliy model bilan (production'da haqiqiy kutubxona shunday ishlatiladi)
+# ---------------------------------------------------------------------------
+#
+#   from sentence_transformers import SentenceTransformer
+#   model = SentenceTransformer("all-MiniLM-L6-v2")   # bir marta yuklanadi
+#   vector = model.encode("Python funksiyalari qanday e'lon qilinadi")
+#   # vector — 384 ta floatdan iborat numpy array
+#
+# Bu kursda haqiqiy og'ir modelni yuklamasdan, PRINSIPNI ko'rsatish uchun
+# oddiy, deterministik "soxta embedding" funksiyasidan foydalanamiz — u
+# so'zlarning belgi-darajasidagi xususiyatlaridan foydalanib past o'lchamli
+# vektor yasaydi. Bu HAQIQIY semantik model emas (faqat harf statistikasiga
+# asoslangan), lekin vektor SHAKLI va API'si bir xil — shuning uchun
+# quyidagi cosine_similarity, chunking va pgvector darslari xuddi shu
+# funksiya ustida ishlaydi.
+
+def fake_embed(text: str, dims: int = 32) -> list[float]:
+    """Deterministik, kichik o'lchamli "o'quv uchun" embedding — haqiqiy
+    modeldagi kabi og'ir emas, lekin xuddi shunday: matn -> son vektori."""
+    text = text.lower().strip()
+    vector = [0.0] * dims
+    for i, ch in enumerate(text):
+        idx = (ord(ch) + i) % dims
+        vector[idx] += 1.0
+    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+    return [v / norm for v in vector]  # normallashtirilgan (uzunligi 1) vektor
+
+
+# ---------------------------------------------------------------------------
+# 2) Hosted API bilan (Gemini text-embedding-004) — haqiqiy HTTP so'rov shakli
+# ---------------------------------------------------------------------------
+
+import httpx
+from app.config import settings
+
+
+async def gemini_embed(text: str) -> list[float] | None:
+    """Gemini'ning embedding endpoint'iga haqiqiy so'rov shakli.
+    API kaliti bo'lmasa None qaytaradi (135-kursdagi ProviderError
+    uslubiga o'xshab) — chaqiruvchi kod fallback qila oladi."""
+    if not settings.GEMINI_API_KEY:
+        return None
+    url = (
+        f"{settings.GEMINI_API_URL.rstrip('/')}/text-embedding-004:embedContent"
+        f"?key={settings.GEMINI_API_KEY}"
     )
-    return await _ask_ai(prompt)
-
-
-async def main() -> None:
-    question = "Ushbu talaba platformasida nechta kurs bor va ular qaysi kategoriyalarga bo'lingan?"
-    answer = await ask_without_rag(question)
-    print("Savol:", question)
-    print("Model javobi (RAG'siz):", answer)
-    print(
-        "\nDIQQAT: bu javob ishonchli ko'rinishi mumkin, lekin model "
-        "hech qachon ushbu platformaning courses jadvalini ko'rmagan — "
-        "u statistik ehtimollik asosida matn generatsiya qilmoqda, "
-        "haqiqiy ma'lumotni qaytarmoqda emas. Bu — gallyutsinatsiya."
-    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json={"content": {"parts": [{"text": text}]}})
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+        return data.get("embedding", {}).get("values")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
-
-# ---------------------------------------------------------------------------
-# Taqqoslash uchun: RAG variantda promptga HAQIQIY ma'lumot qo'shiladi.
-# (Keyingi darslarda buni to'liq quramiz — bu yerda faqat farqni ko'ramiz.)
-# ---------------------------------------------------------------------------
-
-async def ask_with_manual_context(question: str, real_facts: str) -> str | None:
-    """RAG'ning eng oddiy shakli: hali qidiruv yo'q, lekin haqiqiy
-    faktlarni promptga qo'lda qo'shib qo'yish orqali javob sifati keskin
-    o'zgarishini ko'rish mumkin."""
-    prompt = (
-        "Quyidagi HAQIQIY ma'lumotdan foydalanib savolga javob ber. "
-        "Agar ma'lumotda javob bo'lmasa, 'ma'lumotda bu haqida yo'q' deb ayt "
-        "— o'ylab topma.\n\n"
-        f"MA'LUMOT:\n{real_facts}\n\n"
-        f"SAVOL: {question}"
-    )
-    return await _ask_ai(prompt)
+    v1 = fake_embed("Python funksiyasi qanday yoziladi")
+    v2 = fake_embed("def kalit so'zi bilan funksiya e'lon qilinadi")
+    v3 = fake_embed("Pitsa retsepti: xamir va pomidor sousi")
+    print("V1 o'lchami:", len(v1))
+    print("V1[:5]:", [round(x, 3) for x in v1[:5]])
+    print("V2[:5]:", [round(x, 3) for x in v2[:5]])
+    print("V3[:5]:", [round(x, 3) for x in v3[:5]])
